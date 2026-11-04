@@ -1,0 +1,18 @@
+
+{
+  "name": "Ozark",
+  "symbol": "OZK",
+  "description": "Ozark (OZK) is an experimental cryptocurrency built on the Solana blockchain.",
+  "image": "https://raw.githubusercontent.com/dzelil-clbt/ozark-token/main/ozark-logo.png.png",
+  "external_url": "https://github.com/dzelil-clbt/ozark-token",
+  "properties": {
+    "files": [
+      {
+        "uri": "https://raw.githubusercontent.com/dzelil-clbt/ozark-token/main/ozark-logo.png.png",
+        "type": "image/png"
+      }
+    ],
+    "category": "image"
+  }
+}
+  
