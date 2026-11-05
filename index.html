@@ -1,0 +1,363 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1">
+  <title>Ozark | OZK Transfer</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      background: #101010;
+      color: #f5f5f5;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 28px 16px;
+    }
+    main {
+      max-width: 480px;
+      margin: 35px auto;
+      padding: 28px;
+      background: #1d1d1d;
+      border: 1px solid #66521e;
+      border-radius: 18px;
+    }
+    h1 { color: #e9bd54; margin-bottom: 4px; }
+    .muted { color: #aaa; }
+    .balance {
+      font-size: 30px;
+      font-weight: bold;
+      color: #e9bd54;
+      margin: 12px 0 24px;
+    }
+    label {
+      display: block;
+      margin-top: 18px;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+    input {
+      width: 100%;
+      padding: 13px;
+      background: #111;
+      border: 1px solid #555;
+      border-radius: 8px;
+      color: white;
+      font-size: 14px;
+    }
+    button {
+      width: 100%;
+      padding: 14px;
+      margin-top: 18px;
+      background: #e9bd54;
+      color: #111;
+      font-weight: bold;
+      border: none;
+      border-radius: 9px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .45; cursor: default; }
+    #status {
+      margin-top: 22px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.6;
+    }
+    a { color: #e9bd54; }
+    .small { font-size: 12px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>OZARK</h1>
+  <p class="muted">OZK Transfer Tool · Solana Devnet</p>
+
+  <button id="connect">Connect Phantom</button>
+
+  <p class="small muted">Connected wallet</p>
+  <p id="wallet">Not connected</p>
+
+  <p class="small muted">Available OZK</p>
+  <div class="balance" id="balance">—</div>
+
+  <label for="recipient">Recipient Solana address</label>
+  <input id="recipient" value="JDaYwX4KB6oSBrmtXLFmC3GdUPdFqK2HghBDKZqKQzhs">
+
+  <label for="amount">Amount (OZK)</label>
+  <input id="amount" type="text" inputmode="decimal" value="1">
+
+  <button id="send" disabled>Send OZK</button>
+
+  <div id="status" role="status"></div>
+
+  <p class="small muted">
+    Devnet only. Phantom will ask you to approve
+    each transaction. Never enter your recovery phrase.
+  </p>
+</main>
+
+<script type="module">
+import {
+  Connection,
+  PublicKey,
+  Transaction,
+  TransactionInstruction
+} from "https://esm.sh/@solana/web3.js@1.98.4?bundle";
+
+const RPC = "https://api.devnet.solana.com";
+
+const MINT = new PublicKey(
+  "9prpJ1Cv6yYKvUJcNJhoc4om7aQaCcZnweHqGVdyMB34"
+);
+
+const TOKEN_PROGRAM = new PublicKey(
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+);
+
+const ATA_PROGRAM = new PublicKey(
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+);
+
+const SYSTEM_PROGRAM = new PublicKey(
+  "11111111111111111111111111111111"
+);
+
+const connection = new Connection(RPC, "confirmed");
+const connectBtn = document.getElementById("connect");
+const sendBtn = document.getElementById("send");
+const walletEl = document.getElementById("wallet");
+const balanceEl = document.getElementById("balance");
+const statusEl = document.getElementById("status");
+
+let provider;
+let owner;
+let sourceAccount;
+let rawBalance = 0n;
+
+function status(message) {
+  statusEl.textContent = message;
+}
+
+function associatedTokenAddress(wallet, mint) {
+  return PublicKey.findProgramAddressSync(
+    [
+      wallet.toBuffer(),
+      TOKEN_PROGRAM.toBuffer(),
+      mint.toBuffer()
+    ],
+    ATA_PROGRAM
+  )[0];
+}
+
+function parseAmount(value) {
+  if (!/^\d+(\.\d{1,6})?$/.test(value)) {
+    throw new Error("Enter a positive amount with up to 6 decimals.");
+  }
+  const [whole, fraction = ""] = value.split(".");
+  const units =
+    BigInt(whole) * 1000000n +
+    BigInt(fraction.padEnd(6, "0"));
+
+  if (units <= 0n) throw new Error("Amount must exceed zero.");
+  if (units > 18446744073709551615n) {
+    throw new Error("Amount is too large.");
+  }
+  return units;
+}
+
+async function refreshBalance() {
+  const result = await connection.getParsedTokenAccountsByOwner(
+    owner,
+    { mint: MINT },
+    "confirmed"
+  );
+
+  const accounts = result.value.map(item => ({
+    address: item.pubkey,
+    amount: BigInt(
+      item.account.data.parsed.info.tokenAmount.amount
+    )
+  }));
+
+  const funded = accounts.filter(a => a.amount > 0n);
+  funded.sort((a, b) =>
+    a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : 0
+  );
+
+  sourceAccount = funded[0]?.address || null;
+  rawBalance = accounts.reduce((sum, a) => sum + a.amount, 0n);
+
+  const whole = rawBalance / 1000000n;
+  const fraction = (rawBalance % 1000000n)
+    .toString().padStart(6, "0").replace(/0+$/, "");
+
+  balanceEl.textContent =
+    whole.toString() + (fraction ? "." + fraction : "") + " OZK";
+
+  sendBtn.disabled = !sourceAccount;
+}
+
+connectBtn.onclick = async () => {
+  try {
+    provider = window.phantom?.solana;
+
+    if (!provider?.isPhantom) {
+      throw new Error(
+        "Phantom was not detected. Open this page in a browser with Phantom installed."
+      );
+    }
+
+    const response = await provider.connect();
+    owner = response.publicKey;
+
+    walletEl.textContent = owner.toBase58();
+    status("Reading your Devnet OZK balance...");
+    await refreshBalance();
+    status("Connected. Verify your wallet and recipient before sending.");
+  } catch (error) {
+    status("Connection error: " + error.message);
+  }
+};
+
+sendBtn.onclick = async () => {
+  sendBtn.disabled = true;
+
+  try {
+    if (!provider?.publicKey ||
+        !provider.publicKey.equals(owner)) {
+      throw new Error("Wallet changed. Reconnect Phantom.");
+    }
+
+    const recipient = new PublicKey(
+      document.getElementById("recipient").value.trim()
+    );
+
+    const amount = parseAmount(
+      document.getElementById("amount").value.trim()
+    );
+
+    if (amount > rawBalance) {
+      throw new Error("Insufficient OZK balance.");
+    }
+
+    if (recipient.equals(owner)) {
+      throw new Error("Recipient is the connected wallet.");
+    }
+
+    const recipientATA = associatedTokenAddress(recipient, MINT);
+    const transaction = new Transaction();
+
+    // Create the recipient token account if needed.
+    const existing = await connection.getAccountInfo(
+      recipientATA, "confirmed"
+    );
+
+    if (!existing) {
+      transaction.add(new TransactionInstruction({
+        programId: ATA_PROGRAM,
+        keys: [
+          { pubkey: owner, isSigner: true, isWritable: true },
+          { pubkey: recipientATA, isSigner: false, isWritable: true },
+          { pubkey: recipient, isSigner: false, isWritable: false },
+          { pubkey: MINT, isSigner: false, isWritable: false },
+          { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
+          { pubkey: TOKEN_PROGRAM, isSigner: false, isWritable: false }
+        ],
+        data: new Uint8Array([1])
+      }));
+    } else if (!existing.owner.equals(TOKEN_PROGRAM)) {
+      throw new Error("Recipient token account has an unexpected owner.");
+    }
+
+    // SPL Token TransferChecked: instruction 12.
+    const data = new Uint8Array(10);
+    data[0] = 12;
+    new DataView(data.buffer).setBigUint64(1, amount, true);
+    data[9] = 6;
+
+    transaction.add(new TransactionInstruction({
+      programId: TOKEN_PROGRAM,
+      keys: [
+        { pubkey: sourceAccount, isSigner: false, isWritable: true },
+        { pubkey: MINT, isSigner: false, isWritable: false },
+        { pubkey: recipientATA, isSigner: false, isWritable: true },
+        { pubkey: owner, isSigner: true, isWritable: false }
+      ],
+      data
+    }));
+
+    const latest = await connection.getLatestBlockhash("confirmed");
+    transaction.feePayer = owner;
+    transaction.recentBlockhash = latest.blockhash;
+
+    status("Preparing transaction...");
+
+    const simulation = await connection.simulateTransaction(
+      transaction.compileMessage()
+        ? transaction
+        : transaction,
+      undefined,
+      true
+    );
+
+    if (simulation.value.err) {
+      throw new Error(
+        "Simulation failed: " +
+        JSON.stringify(simulation.value.err) +
+        "\n" + (simulation.value.logs || []).join("\n")
+      );
+    }
+
+    const approved = confirm(
+      "Transfer " + document.getElementById("amount").value +
+      " OZK on DEVNET?\n\nFrom:\n" +
+      owner.toBase58() + "\n\nTo:\n" +
+      recipient.toBase58()
+    );
+
+    if (!approved) {
+      status("Transfer canceled.");
+      return;
+    }
+
+    status("Approve the transaction in Phantom...");
+
+    const result = await provider.signAndSendTransaction(transaction);
+    const signature = result.signature;
+
+    status("Submitted: " + signature + "\nConfirming...");
+
+    const confirmation = await connection.confirmTransaction(
+      {
+        signature,
+        blockhash: latest.blockhash,
+        lastValidBlockHeight: latest.lastValidBlockHeight
+      },
+      "confirmed"
+    );
+
+    if (confirmation.value.err) {
+      throw new Error(
+        "Transaction failed: " +
+        JSON.stringify(confirmation.value.err)
+      );
+    }
+
+    statusEl.innerHTML =
+      'Transfer confirmed! <a target="_blank" rel="noopener noreferrer" href="' +
+      'https://explorer.solana.com/tx/' +
+      encodeURIComponent(signature) +
+      '?cluster=devnet">View transaction on Solana Explorer</a>';
+
+    await refreshBalance();
+
+  } catch (error) {
+    status("Transfer error: " + (error.message || String(error)));
+  } finally {
+    sendBtn.disabled = !sourceAccount;
+  }
+};
+</script>
+</body>
+</html>
